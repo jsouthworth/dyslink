@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"reflect"
 	"sort"
 	"text/tabwriter"
 )
@@ -81,18 +82,63 @@ func setMonitor(client *client, args ...string)      {}
 func setAirQuality(client *client, args ...string)   {}
 func setNightMode(client *client, args ...string)    {}
 func resetFilterLife(client *client, args ...string) {}
+
+func isEmptyValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Ptr:
+		return v.IsNil()
+	}
+	return false
+}
+
+func printStruct(v reflect.Value) {
+	vtype := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if isEmptyValue(field) {
+			continue
+		}
+		sfield := vtype.Field(i)
+		fmt.Printf("%s: %v\n", sfield.Name, field.Interface())
+	}
+}
+
+func printProductState(state *dyslink.ProductState) {
+	fmt.Println("Product State:")
+	fmt.Println("--------------")
+	v := reflect.ValueOf(state).Elem()
+	printStruct(v)
+}
+
+func printEnvironmentState(state *dyslink.EnvironmentState) {
+	fmt.Println("Environment State:")
+	fmt.Println("--------------")
+	v := reflect.ValueOf(state).Elem()
+	printStruct(v)
+}
+
 func getState(client *client, args ...string) {
 	handleError(client.client.RequestCurrentState())
-
 	for num_msg := 0; num_msg < 2; num_msg++ {
 		msg := <-client.callbackChan
 		handleError(msg.Error)
 		switch v := msg.Message.(type) {
 		case *dyslink.ProductState:
-			fmt.Printf("%#v\n", *v)
+			printProductState(v)
 		case *dyslink.EnvironmentState:
-			fmt.Printf("%#v\n", *v)
+			printEnvironmentState(v)
 		}
+		fmt.Println()
 	}
 }
 
