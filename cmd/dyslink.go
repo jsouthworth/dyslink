@@ -13,6 +13,7 @@ import (
 const variadic = -1
 
 var host, user, pass, model string
+var debug bool
 
 func init() {
 	flag.Usage = func() {
@@ -24,6 +25,7 @@ func init() {
 	flag.StringVar(&user, "user", "", "Username")
 	flag.StringVar(&pass, "pass", "", "Password")
 	flag.StringVar(&model, "model", "", "Device Model [required]")
+	flag.BoolVar(&debug, "debug", false, "Enable debugging")
 }
 
 type client struct {
@@ -170,6 +172,7 @@ func main() {
 		Username:      user,
 		Password:      pass,
 		Model:         model,
+		Debug:         debug,
 		CallbackChan:  ch,
 	})
 	handleError(c.Connect())
