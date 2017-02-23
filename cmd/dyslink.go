@@ -4,7 +4,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/hashicorp/mdns"
 	"github.com/jsouthworth/dyslink"
+	"io/ioutil"
+	"log"
 	"os"
 	"sort"
 	"text/tabwriter"
@@ -26,6 +29,7 @@ func init() {
 	flag.StringVar(&pass, "pass", "", "Password")
 	flag.StringVar(&model, "model", "", "Device Model [required]")
 	flag.BoolVar(&debug, "debug", false, "Enable debugging")
+	log.SetOutput(ioutil.Discard)
 }
 
 type client struct {
@@ -92,31 +96,52 @@ func getState(client *client, args ...string) {
 	}
 }
 
+func discover(client *client, args ...string) {
+	entriesCh := make(chan *mdns.ServiceEntry, 4)
+	go func() {
+		for entry := range entriesCh {
+			fmt.Println("Name:", entry.Name)
+			fmt.Println("Host:", entry.Host)
+			fmt.Println("IP:", entry.AddrV4)
+			fmt.Println("Port:", entry.Port)
+			fmt.Printf("Address: tcp://%v:%v\n", entry.AddrV4, entry.Port)
+			fmt.Println()
+		}
+	}()
+
+	// Start the lookup
+	mdns.Lookup("_dyson_mqtt._tcp", entriesCh)
+	close(entriesCh)
+}
+
 type cmd struct {
-	fn    func(*client, ...string)
-	info  string
-	nargs int
+	fn      func(*client, ...string)
+	info    string
+	nargs   int
+	connect bool
 }
 
 var cmds = map[string]*cmd{
 	"bootstrap": {
-		bootstrap, "Bootstrap a new device", variadic},
+		bootstrap, "Bootstrap a new device", variadic, true},
 	"set-fan-mode": {
-		setFanMode, "Set the mode of the fan", 1},
+		setFanMode, "Set the mode of the fan", 1, true},
 	"set-speed": {
-		setSpeed, "Set fan speed", 1},
+		setSpeed, "Set fan speed", 1, true},
 	"set-oscillate": {
-		setOscillate, "Toggle oscillation", 1},
+		setOscillate, "Toggle oscillation", 1, true},
 	"set-monitor": {
-		setMonitor, "Toggle standby monitoring", 1},
+		setMonitor, "Toggle standby monitoring", 1, true},
 	"set-air-quality-target": {
-		setAirQuality, "Set Air Quality Target in auto mode", 1},
+		setAirQuality, "Set Air Quality Target in auto mode", 1, true},
 	"set-night-mode": {
-		setNightMode, "Toggle night mode", 1},
+		setNightMode, "Toggle night mode", 1, true},
 	"reset-filter-lifetime": {
-		resetFilterLife, "Reset the filter's lifetime", 0},
+		resetFilterLife, "Reset the filter's lifetime", 0, true},
 	"get-current-state": {
-		getState, "Request the current state from the device", 0},
+		getState, "Request the current state from the device", 0, true},
+	"discover": {
+		discover, "Find all Dyson Purifiers", 0, false},
 }
 
 func usage() {
@@ -151,18 +176,21 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	if !validModel(model) {
-		flag.Usage()
-		os.Exit(1)
-	}
-	if host == "" {
-		fmt.Fprintln(os.Stderr, "Must supply address")
-		flag.Usage()
-		os.Exit(1)
-	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Must supply command")
 		flag.Usage()
+		os.Exit(1)
+	}
+	cmdin := args[0]
+
+	cmd, ok := cmds[cmdin]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "Invalid command")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if len(args)-1 < cmd.nargs {
+		fmt.Fprintln(os.Stderr, "Invalid number of arguements to", cmdin, "needs", cmd.nargs)
 		os.Exit(1)
 	}
 
@@ -175,18 +203,18 @@ func main() {
 		Debug:         debug,
 		CallbackChan:  ch,
 	})
-	handleError(c.Connect())
-
-	cmdin := args[0]
-	cmd, ok := cmds[cmdin]
-	if !ok {
-		fmt.Fprintln(os.Stderr, "Invalid command")
-		flag.Usage()
-		os.Exit(1)
-	}
-	if len(args)-1 < cmd.nargs {
-		fmt.Fprintln(os.Stderr, "Invalid number of arguements to", cmdin, "needs", cmd.nargs)
-		os.Exit(1)
+	if cmd.connect {
+		if !validModel(model) {
+			fmt.Fprintln(os.Stderr, "Must supply model type")
+			flag.Usage()
+			os.Exit(1)
+		}
+		if host == "" {
+			fmt.Fprintln(os.Stderr, "Must supply address")
+			flag.Usage()
+			os.Exit(1)
+		}
+		handleError(c.Connect())
 	}
 
 	cmd.fn(&client{c, ch}, args[1:]...)
