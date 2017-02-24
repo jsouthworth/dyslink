@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"text/tabwriter"
 )
 
@@ -56,17 +57,36 @@ func bootstrap(client *client, args ...string) {
 	}
 
 	client.client.WifiBootstrap(ssid, key)
-	msg := <-client.callbackChan
-	handleError(msg.Error)
-	switch v := msg.Message.(type) {
-	case *dyslink.DeviceCredentials:
-		fmt.Println("Credentials for device are: SN:", v.SerialNumber,
-			"Password:", v.Password)
-	}
 }
 
-func setFanMode(client *client, args ...string) {}
-func setSpeed(client *client, args ...string)   {}
+func setFanMode(client *client, args ...string) {
+	fmode := args[0]
+	if fmode != dyslink.FanModeOn &&
+		fmode != dyslink.FanModeOff &&
+		fmode != dyslink.FanModeAuto {
+		handleError(errors.New("Invalid Fan mode " + fmode))
+	}
+	s := &dyslink.FanState{
+		FanMode: fmode,
+	}
+	handleError(client.client.SetState(s))
+}
+
+func setSpeed(client *client, args ...string) {
+	speed := args[0]
+	sval, err := strconv.Atoi(speed)
+	if err != nil {
+		handleError(err)
+	}
+	if sval < 1 || sval > 10 {
+		handleError(errors.New("Invalid fan speed " + speed))
+	}
+	s := &dyslink.FanState{
+		FanSpeed: speed,
+	}
+	handleError(client.client.SetState(s))
+}
+
 func setOscillate(client *client, args ...string) {
 	ostate := args[0]
 	if ostate != dyslink.OscillateOn &&
@@ -78,10 +98,53 @@ func setOscillate(client *client, args ...string) {
 	}
 	handleError(client.client.SetState(s))
 }
-func setMonitor(client *client, args ...string)      {}
-func setAirQuality(client *client, args ...string)   {}
-func setNightMode(client *client, args ...string)    {}
-func resetFilterLife(client *client, args ...string) {}
+
+func setMonitor(client *client, args ...string) {
+	mstate := args[0]
+	if mstate != dyslink.StandbyMonitorOn &&
+		mstate != dyslink.StandbyMonitorOff {
+		handleError(errors.New("Invalid monitor state " + mstate))
+	}
+	s := &dyslink.FanState{
+		StandbyMonitoring: mstate,
+	}
+	handleError(client.client.SetState(s))
+}
+
+func setFocusedMode(client *client, args ...string) {
+	fmode := args[0]
+	if fmode != dyslink.FocusedModeOn &&
+		fmode != dyslink.FocusedModeOff {
+		handleError(errors.New("Invalid focused mode " + fmode))
+	}
+	s := &dyslink.FanState{
+		FocusedMode: fmode,
+	}
+	handleError(client.client.SetState(s))
+}
+
+func setTemp(client *client, args ...string) {
+	temp := args[0]
+	sval, err := strconv.Atoi(temp)
+	if err != nil {
+		handleError(err)
+	}
+	if sval == 0 {
+		s := &dyslink.FanState{
+			HeatMode: "OFF",
+		}
+		handleError(client.client.SetState(s))
+		return
+	}
+	if sval < 33 || sval > 99 {
+		handleError(errors.New("Invalid fan temp " + temp))
+	}
+	s := &dyslink.FanState{
+		HeatMode:   "HEAT",
+		HeatTarget: strconv.Itoa(dyslink.ConvertTempFromFahr(sval)),
+	}
+	handleError(client.client.SetState(s))
+}
 
 func isEmptyValue(v reflect.Value) bool {
 	switch v.Kind() {
@@ -168,6 +231,8 @@ type cmd struct {
 }
 
 var cmds = map[string]*cmd{
+	"discover": {
+		discover, "Find all Dyson Purifiers", 0, false},
 	"bootstrap": {
 		bootstrap, "Bootstrap a new device", variadic, true},
 	"set-fan-mode": {
@@ -178,16 +243,12 @@ var cmds = map[string]*cmd{
 		setOscillate, "Toggle oscillation", 1, true},
 	"set-monitor": {
 		setMonitor, "Toggle standby monitoring", 1, true},
-	"set-air-quality-target": {
-		setAirQuality, "Set Air Quality Target in auto mode", 1, true},
-	"set-night-mode": {
-		setNightMode, "Toggle night mode", 1, true},
-	"reset-filter-lifetime": {
-		resetFilterLife, "Reset the filter's lifetime", 0, true},
+	"set-temp": {
+		setTemp, "Set temperature", 1, true},
+	"set-focused-mode": {
+		setFocusedMode, "Set focused mode", 1, true},
 	"get-current-state": {
 		getState, "Request the current state from the device", 0, true},
-	"discover": {
-		discover, "Find all Dyson Purifiers", 0, false},
 }
 
 func usage() {
