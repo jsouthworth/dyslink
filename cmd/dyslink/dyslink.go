@@ -59,6 +59,13 @@ func bootstrap(client *client, args ...string) {
 	client.client.WifiBootstrap(ssid, key)
 }
 
+func resetFilter(client *client, args ...string) {
+	s := &dyslink.FanState{
+		ResetFilter: "RSTF",
+	}
+	handleError(client.client.SetState(s))
+}
+
 func setFanMode(client *client, args ...string) {
 	fmode := args[0]
 	if fmode != dyslink.FanModeOn &&
@@ -249,6 +256,8 @@ var cmds = map[string]*cmd{
 		setFocusedMode, "Set focused mode", 1, true},
 	"get-current-state": {
 		getState, "Request the current state from the device", 0, true},
+	"reset-filter": {
+		resetFilter, "Request reset of the filter life", 0, true},
 }
 
 func usage() {
