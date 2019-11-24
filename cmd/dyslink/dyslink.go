@@ -1,18 +1,24 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/hashicorp/mdns"
-	"github.com/jsouthworth/dyslink"
 	"io/ioutil"
 	"log"
+	"math"
+	"net"
 	"os"
 	"reflect"
 	"sort"
 	"strconv"
+	"sync"
 	"text/tabwriter"
+	"time"
+
+	"github.com/grandcat/zeroconf"
+	"github.com/jsouthworth/dyslink"
 )
 
 const variadic = -1
@@ -179,7 +185,51 @@ func printStruct(v reflect.Value) {
 			continue
 		}
 		sfield := vtype.Field(i)
-		fmt.Printf("%s: %v\n", sfield.Name, field.Interface())
+		switch sfield.Name {
+		case "Temperature", "HeatTarget":
+			v, err := strconv.Atoi(field.Interface().(string))
+			if err != nil {
+				fmt.Printf("%s: %v\n",
+					sfield.Name, field.Interface())
+				continue
+			}
+			temp := dyslink.ConvertTempToFahr(v)
+			fmt.Printf("%s: %v°F\n", sfield.Name, temp)
+		case "Humidity":
+			v, err := strconv.Atoi(field.Interface().(string))
+			if err != nil {
+				fmt.Printf("%s: %v\n",
+					sfield.Name, field.Interface())
+				continue
+			}
+			fmt.Printf("%s: %v%%\n", sfield.Name, v)
+		case "FilterLife":
+			v, err := strconv.Atoi(field.Interface().(string))
+			if err != nil {
+				fmt.Printf("%s: %v\n",
+					sfield.Name, field.Interface())
+				continue
+			}
+			fmt.Printf("%s: %v%%\n", sfield.Name,
+				math.Round((float64(v)/4300)*100))
+		case "QualityTarget":
+			var targetName string
+			switch field.Interface().(string) {
+			case "0001":
+				targetName = "High"
+			case "0003":
+				targetName = "Normal"
+			case "0004":
+				targetName = "Low"
+			default:
+				targetName = field.Interface().(string)
+			}
+			fmt.Printf("%s: %v\n", sfield.Name, targetName)
+		case "UnknownVact":
+			fmt.Printf("%s: %v\n", "VOC", field.Interface())
+		default:
+			fmt.Printf("%s: %v\n", sfield.Name, field.Interface())
+		}
 	}
 }
 
@@ -195,6 +245,43 @@ func printEnvironmentState(state *dyslink.EnvironmentState) {
 	fmt.Println("--------------")
 	v := reflect.ValueOf(state).Elem()
 	printStruct(v)
+	printAirQualityEstimate(state)
+}
+
+func printAirQualityEstimate(state *dyslink.EnvironmentState) {
+	voc, _ := strconv.Atoi(state.UnknownVact)
+	part, _ := strconv.Atoi(state.Particle)
+	est := math.Max(float64(voc), float64(part))
+	var quality string
+	switch {
+	case est <= 3:
+		quality = "good"
+	case est <= 6:
+		quality = "fair"
+	case est <= 8:
+		quality = "poor"
+	default:
+		quality = "very poor"
+	}
+	fmt.Println("Air Quality Estimate:", quality)
+}
+
+func printMessage(msg interface{}) {
+	fmt.Printf("Message (%T):", msg)
+	fmt.Println("--------------")
+	v := reflect.ValueOf(msg).Elem()
+	printStruct(v)
+}
+
+func printState(msg interface{}) {
+	switch v := msg.(type) {
+	case *dyslink.ProductState:
+		printProductState(v)
+	case *dyslink.EnvironmentState:
+		printEnvironmentState(v)
+	default:
+		printMessage(v)
+	}
 }
 
 func getState(client *client, args ...string) {
@@ -202,32 +289,63 @@ func getState(client *client, args ...string) {
 	for num_msg := 0; num_msg < 2; num_msg++ {
 		msg := <-client.callbackChan
 		handleError(msg.Error)
-		switch v := msg.Message.(type) {
-		case *dyslink.ProductState:
-			printProductState(v)
-		case *dyslink.EnvironmentState:
-			printEnvironmentState(v)
+		printState(msg.Message)
+		fmt.Println()
+	}
+}
+
+func monitor(client *client, args ...string) {
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			client.client.RequestCurrentState()
 		}
+	}()
+	for msg := range client.callbackChan {
+		if msg.Error != nil {
+			fmt.Fprintln(os.Stderr, "error:", msg.Error)
+			fmt.Fprintln(os.Stderr)
+			continue
+		}
+		printState(msg.Message)
 		fmt.Println()
 	}
 }
 
 func discover(client *client, args ...string) {
-	entriesCh := make(chan *mdns.ServiceEntry, 4)
+	entriesCh := make(chan *zeroconf.ServiceEntry, 4)
+	resolver, err := zeroconf.NewResolver(nil)
+	handleError(err)
+
+	printOne := func(entry *zeroconf.ServiceEntry, ip net.IP) {
+		fmt.Println("Name:", entry.Service)
+		fmt.Println("Host:", entry.HostName)
+		fmt.Println("IP:", ip)
+		fmt.Println("Port:", entry.Port)
+		fmt.Printf("Address: tcp://%v:%v\n", ip,
+			entry.Port)
+		fmt.Println()
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		wg.Done()
 		for entry := range entriesCh {
-			fmt.Println("Name:", entry.Name)
-			fmt.Println("Host:", entry.Host)
-			fmt.Println("IP:", entry.AddrV4)
-			fmt.Println("Port:", entry.Port)
-			fmt.Printf("Address: tcp://%v:%v\n", entry.AddrV4, entry.Port)
-			fmt.Println()
+			for _, ip := range entry.AddrIPv4 {
+				printOne(entry, ip)
+			}
+			for _, ip := range entry.AddrIPv6 {
+				printOne(entry, ip)
+			}
 		}
 	}()
-
+	wg.Wait()
 	// Start the lookup
-	mdns.Lookup("_dyson_mqtt._tcp", entriesCh)
-	close(entriesCh)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	err = resolver.Browse(ctx, "_dyson_mqtt._tcp", "local.", entriesCh)
+	handleError(err)
+	<-ctx.Done()
 }
 
 type cmd struct {
@@ -256,6 +374,8 @@ var cmds = map[string]*cmd{
 		setFocusedMode, "Set focused mode", 1, true},
 	"get-current-state": {
 		getState, "Request the current state from the device", 0, true},
+	"monitor": {
+		monitor, "Monitor all messages", 0, true},
 	"reset-filter": {
 		resetFilter, "Request reset of the filter life", 0, true},
 }
